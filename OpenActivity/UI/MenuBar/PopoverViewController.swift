@@ -190,6 +190,12 @@ final class PopoverViewController: NSViewController {
 
     // MARK: - Tabs
 
+    /// Switches to the metric's tab, if the dashboard has one.
+    func showTab(_ metric: Metric) {
+        guard Self.tabs.contains(metric) else { return }
+        select(metric)
+    }
+
     private func select(_ metric: Metric) {
         guard metric != selected else { return }
         selected = metric
