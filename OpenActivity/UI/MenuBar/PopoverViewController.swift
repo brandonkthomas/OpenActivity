@@ -24,6 +24,7 @@ final class PopoverViewController: NSViewController {
     private var metricPages: [Metric: MetricPage] = [:]
     private var projectsPage: ProjectsPage!
     private var token: Monitor.Token?
+    private var preferencesObserver: NSObjectProtocol?
     private var isOnScreen = false
 
     // Traffic since launch, integrated from the sampled rates.
@@ -40,6 +41,9 @@ final class PopoverViewController: NSViewController {
         super.init(nibName: nil, bundle: nil)
         // Observed from launch so the session totals are complete; the UI only updates while shown.
         token = Monitor.shared.observe { [weak self] snapshot in self?.receive(snapshot) }
+        preferencesObserver = NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.applyAppRowCounts()
+        }
     }
 
     @available(*, unavailable)
@@ -47,6 +51,7 @@ final class PopoverViewController: NSViewController {
 
     deinit {
         if let token { Monitor.shared.removeObserver(token) }
+        if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }
     }
 
     // MARK: - Building
@@ -82,11 +87,21 @@ final class PopoverViewController: NSViewController {
 
         view = root
         showSelectedPage()
+        applyAppRowCounts(force: true)
+    }
 
-        // Every page reserves its full height, so the size measured once holds for good.
-        let size = root.fittingSize
-        root.frame = NSRect(origin: .zero, size: size)
+    /// Shows as many app rows as Settings asks for. Every page reserves its full height, so the
+    /// size is measured again only when a row count changes.
+    private func applyAppRowCounts(force: Bool = false) {
+        guard isViewLoaded else { return }
+        let preferences = Preferences.shared
+        var changed = overviewPage.setAppRowCount(preferences.dashboardBusiestCount)
+        for page in metricPages.values where page.setAppRowCount(preferences.dashboardTopAppsCount) { changed = true }
+        guard changed || force else { return }
+        let size = view.fittingSize
+        view.setFrameSize(size)
         preferredContentSize = size
+        if isOnScreen, Monitor.shared.hasSample { update(Monitor.shared.snapshot) }
     }
 
     private func makeTabBar() -> NSView {
@@ -242,7 +257,7 @@ final class PopoverViewController: NSViewController {
         let recent = Monitor.shared.recent
         switch selected {
         case .overview:
-            overviewPage.update(snapshot, recent: recent, apps: visibleApps(snapshot, by: .cpu, limit: 3))
+            overviewPage.update(snapshot, recent: recent, apps: visibleApps(snapshot, by: .cpu, limit: Preferences.shared.dashboardBusiestCount))
         case .projects:
             projectsPage.update(snapshot.projects)
         default:
@@ -270,7 +285,7 @@ final class PopoverViewController: NSViewController {
         let metric = page.metric
         let color = Theme.color(for: metric)
         let secondary = Theme.secondaryColor(for: metric)
-        let apps = visibleApps(snapshot, by: metric, limit: MetricPage.appRowCount)
+        let apps = visibleApps(snapshot, by: metric, limit: Preferences.shared.dashboardTopAppsCount)
         let appValue: (AppGroup) -> String
 
         switch metric {
@@ -414,7 +429,8 @@ private final class OverviewPage: NSStackView {
         setCustomSpacing(14, after: card)
 
         addFullWidth(SectionHeader("Busiest right now"))
-        for _ in 0..<3 {
+        // Built for the largest count; rows past the chosen count are hidden.
+        for _ in 0..<Preferences.dashboardAppCounts.upperBound {
             let row = AppRow(metric: .cpu, onOpen: onOpenApp, beforeModal: beforeModal)
             appRows.append(row)
             addFullWidth(row)
@@ -425,6 +441,9 @@ private final class OverviewPage: NSStackView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Returns whether the number of visible rows changed.
+    func setAppRowCount(_ count: Int) -> Bool { appRows.setVisibleCount(count) }
 
     func update(_ snapshot: SystemSnapshot, recent: RecentHistory, apps: [AppGroup]) {
         uptimeLabel.set("Up \(Format.duration(snapshot.uptime)) · \(Format.processes(snapshot.processCount))")
@@ -484,8 +503,6 @@ private final class OverviewPage: NSStackView {
 // MARK: - Metric tab
 
 private final class MetricPage: NSStackView {
-    static let appRowCount = 5
-
     let metric: Metric
     let figure = BigFigureView(size: 28)
     let caption = NSTextField.label("", size: 11, color: .secondaryLabelColor)
@@ -521,7 +538,8 @@ private final class MetricPage: NSStackView {
         let header = SectionHeader("Top apps")
         addFullWidth(header)
         setCustomSpacing(2, after: header)
-        for _ in 0..<Self.appRowCount {
+        // Built for the largest count; rows past the chosen count are hidden.
+        for _ in 0..<Preferences.dashboardAppCounts.upperBound {
             let row = AppRow(metric: metric, onOpen: onOpenApp, beforeModal: beforeModal)
             appRows.append(row)
             addFullWidth(row)
@@ -536,6 +554,9 @@ private final class MetricPage: NSStackView {
         chart.maxValue = maxValue
         chart.series = series
     }
+
+    /// Returns whether the number of visible rows changed.
+    func setAppRowCount(_ count: Int) -> Bool { appRows.setVisibleCount(count) }
 
     func setStats(_ values: [String]) {
         for (stat, value) in zip(stats, values) { stat.valueLabel.set(value) }
@@ -998,6 +1019,18 @@ private final class TabButton: NSView {
     override func accessibilityPerformPress() -> Bool {
         onClick?()
         return true
+    }
+}
+
+private extension Array where Element: NSView {
+    /// Shows the first `count` views and hides the rest. Returns whether anything changed.
+    func setVisibleCount(_ count: Int) -> Bool {
+        var changed = false
+        for (index, view) in enumerated() where view.isHidden != (index >= count) {
+            view.isHidden = index >= count
+            changed = true
+        }
+        return changed
     }
 }
 
