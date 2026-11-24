@@ -24,6 +24,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController = popoverController
         popover.delegate = self
         popoverController.dismiss = { [weak self] in self?.closePopover() }
+        popoverController.sizeDidChange = { [weak self] size in
+            // A shown popover doesn't follow preferredContentSize on its own.
+            guard let self, self.popover.isShown else { return }
+            self.popover.contentSize = size
+        }
 
         statusItem.autosaveName = "OpenActivityStatusItem"
         if let button = statusItem.button {
@@ -101,6 +106,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func showPopover() {
         guard let button = statusItem.button else { return }
+        // NSPopover keeps the size it last opened at, so content resized while it was closed (another
+        // tab or row count) would be clipped. Handing it the controller again makes it adopt the new size.
+        if popoverController.isViewLoaded, popover.contentSize != popoverController.preferredContentSize {
+            popover.contentViewController = nil
+            popover.contentViewController = popoverController
+        }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         // A transient popover only notices clicks inside this app; close it on clicks anywhere else too.

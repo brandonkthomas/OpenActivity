@@ -35,6 +35,9 @@ final class Preferences {
     /// Metrics that can be shown in the menu bar. `.sensors` stands for the CPU temperature.
     static let menuBarChoices: [Metric] = [.cpu, .memory, .gpu, .network, .disk, .sensors, .battery]
 
+    /// How many apps the menu bar dashboard can list in one section.
+    static let dashboardAppCounts = 1...10
+
     private let defaults = UserDefaults.standard
 
     private enum Key {
@@ -43,6 +46,8 @@ final class Preferences {
         static let showSystem = "apps.showSystem"
         static let showDockIcon = "app.showDockIcon"
         static let lastPage = "window.lastPage"
+        static let dashboardBusiestCount = "popover.busiestCount"
+        static let dashboardTopAppsCount = "popover.topAppsCount"
     }
 
     init() {
@@ -52,6 +57,8 @@ final class Preferences {
             Key.showSystem: true,
             Key.showDockIcon: true,
             Key.lastPage: Metric.overview.rawValue,
+            Key.dashboardBusiestCount: 3,
+            Key.dashboardTopAppsCount: 5,
         ])
     }
 
@@ -82,6 +89,22 @@ final class Preferences {
             NSApp.setActivationPolicy(newValue ? .regular : .accessory)
             changed()
         }
+    }
+
+    /// Apps listed under "Busiest right now" on the dashboard's Overview tab.
+    var dashboardBusiestCount: Int {
+        get { Self.clampedAppCount(defaults.integer(forKey: Key.dashboardBusiestCount)) }
+        set { defaults.set(Self.clampedAppCount(newValue), forKey: Key.dashboardBusiestCount); changed() }
+    }
+
+    /// Apps listed under "Top apps" on the dashboard's metric tabs.
+    var dashboardTopAppsCount: Int {
+        get { Self.clampedAppCount(defaults.integer(forKey: Key.dashboardTopAppsCount)) }
+        set { defaults.set(Self.clampedAppCount(newValue), forKey: Key.dashboardTopAppsCount); changed() }
+    }
+
+    private static func clampedAppCount(_ count: Int) -> Int {
+        min(max(count, dashboardAppCounts.lowerBound), dashboardAppCounts.upperBound)
     }
 
     var lastPage: Metric {

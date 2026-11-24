@@ -4,7 +4,8 @@
 //
 //  The compact dashboard shown from the menu bar: an overview, one tab per metric and running
 //  dev projects. Every view is built once; snapshots only update text, charts and row contents,
-//  and every page has a fixed height so the popover never changes size while it is open.
+//  and every page has a fixed height, so the popover only changes size when the tab or the
+//  number of app rows in Settings changes.
 //
 
 import AppKit
@@ -12,6 +13,9 @@ import AppKit
 final class PopoverViewController: NSViewController {
     /// Closes the popover. Set by the status item.
     var dismiss: (() -> Void)?
+    /// Called with the new content size when it changes. Set by the status item, which resizes
+    /// the popover while it is shown.
+    var sizeDidChange: ((NSSize) -> Void)?
 
     static let width: CGFloat = 360
     private static let tabs: [Metric] = [.overview, .cpu, .memory, .disk, .network, .gpu, .battery, .projects]
@@ -20,10 +24,16 @@ final class PopoverViewController: NSViewController {
     private var selected: Metric
     private var tabButtons: [Metric: TabButton] = [:]
     private var pages: [Metric: NSView] = [:]
+    /// Pins each page's bottom to the container; only the selected page's is active.
+    private var pageBottoms: [Metric: NSLayoutConstraint] = [:]
+    /// Everything inside the popover. Measured instead of `view`, which a shown popover holds at
+    /// its current size, so the content could grow but never shrink.
+    private var contentStack: NSView!
     private var overviewPage: OverviewPage!
     private var metricPages: [Metric: MetricPage] = [:]
     private var projectsPage: ProjectsPage!
     private var token: Monitor.Token?
+    private var preferencesObserver: NSObjectProtocol?
     private var isOnScreen = false
 
     // Traffic since launch, integrated from the sampled rates.
@@ -40,6 +50,9 @@ final class PopoverViewController: NSViewController {
         super.init(nibName: nil, bundle: nil)
         // Observed from launch so the session totals are complete; the UI only updates while shown.
         token = Monitor.shared.observe { [weak self] snapshot in self?.receive(snapshot) }
+        preferencesObserver = NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.applyAppRowCounts()
+        }
     }
 
     @available(*, unavailable)
@@ -47,6 +60,7 @@ final class PopoverViewController: NSViewController {
 
     deinit {
         if let token { Monitor.shared.removeObserver(token) }
+        if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }
     }
 
     // MARK: - Building
@@ -54,6 +68,7 @@ final class PopoverViewController: NSViewController {
     override func loadView() {
         let root = NSView()
         let stack = NSStackView.vertical(spacing: 0, alignment: .centerX)
+        contentStack = stack
         root.addSubview(stack)
         stack.pinEdges(to: root)
         stack.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
@@ -81,12 +96,30 @@ final class PopoverViewController: NSViewController {
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 0, right: 0)
 
         view = root
+        applyAppRowCounts()
         showSelectedPage()
+    }
 
-        // Every page reserves its full height, so the size measured once holds for good.
-        let size = root.fittingSize
-        root.frame = NSRect(origin: .zero, size: size)
+    /// Shows as many app rows as Settings asks for.
+    private func applyAppRowCounts() {
+        guard isViewLoaded else { return }
+        let preferences = Preferences.shared
+        var changed = overviewPage.setAppRowCount(preferences.dashboardBusiestCount)
+        for page in metricPages.values where page.setAppRowCount(preferences.dashboardTopAppsCount) { changed = true }
+        guard changed else { return }
+        resizeToSelectedPage()
+        if isOnScreen, Monitor.shared.hasSample { update(Monitor.shared.snapshot) }
+    }
+
+    /// Fits the popover to the selected page. Every page reserves room for all its rows, so this
+    /// changes only with the tab or the row counts, never with the figures.
+    private func resizeToSelectedPage() {
+        guard isViewLoaded else { return }
+        let size = contentStack.fittingSize
+        guard size != preferredContentSize else { return }
+        if !isOnScreen { view.setFrameSize(size) }
         preferredContentSize = size
+        sizeDidChange?(size)
     }
 
     private func makeTabBar() -> NSView {
@@ -119,16 +152,16 @@ final class PopoverViewController: NSViewController {
         projectsPage = ProjectsPage(onOpenProjects: { openMain(.projects) }, beforeModal: beforeModal)
         pages[.projects] = projectsPage
 
-        for page in pages.values {
+        for (metric, page) in pages {
             page.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(page)
-            // Hidden pages keep their constraints, so the container is as tall as the tallest page.
             NSLayoutConstraint.activate([
                 page.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
                 page.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
                 page.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-                page.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -10),
             ])
+            // The container takes the selected page's height; see showSelectedPage().
+            pageBottoms[metric] = page.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10)
         }
         return container
     }
@@ -201,6 +234,10 @@ final class PopoverViewController: NSViewController {
     private func showSelectedPage() {
         for (metric, button) in tabButtons { button.isSelected = metric == selected }
         for (metric, page) in pages { page.isHidden = metric != selected }
+        // Deactivate before activating so two pages never pin the container at once.
+        for (metric, bottom) in pageBottoms where metric != selected { bottom.isActive = false }
+        pageBottoms[selected]?.isActive = true
+        resizeToSelectedPage()
     }
 
     // MARK: - Actions
@@ -242,7 +279,7 @@ final class PopoverViewController: NSViewController {
         let recent = Monitor.shared.recent
         switch selected {
         case .overview:
-            overviewPage.update(snapshot, recent: recent, apps: visibleApps(snapshot, by: .cpu, limit: 3))
+            overviewPage.update(snapshot, recent: recent, apps: visibleApps(snapshot, by: .cpu, limit: Preferences.shared.dashboardBusiestCount))
         case .projects:
             projectsPage.update(snapshot.projects)
         default:
@@ -270,7 +307,7 @@ final class PopoverViewController: NSViewController {
         let metric = page.metric
         let color = Theme.color(for: metric)
         let secondary = Theme.secondaryColor(for: metric)
-        let apps = visibleApps(snapshot, by: metric, limit: MetricPage.appRowCount)
+        let apps = visibleApps(snapshot, by: metric, limit: Preferences.shared.dashboardTopAppsCount)
         let appValue: (AppGroup) -> String
 
         switch metric {
@@ -414,7 +451,8 @@ private final class OverviewPage: NSStackView {
         setCustomSpacing(14, after: card)
 
         addFullWidth(SectionHeader("Busiest right now"))
-        for _ in 0..<3 {
+        // Built for the largest count; rows past the chosen count are hidden.
+        for _ in 0..<Preferences.dashboardAppCounts.upperBound {
             let row = AppRow(metric: .cpu, onOpen: onOpenApp, beforeModal: beforeModal)
             appRows.append(row)
             addFullWidth(row)
@@ -425,6 +463,9 @@ private final class OverviewPage: NSStackView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Returns whether the number of visible rows changed.
+    func setAppRowCount(_ count: Int) -> Bool { appRows.setVisibleCount(count) }
 
     func update(_ snapshot: SystemSnapshot, recent: RecentHistory, apps: [AppGroup]) {
         uptimeLabel.set("Up \(Format.duration(snapshot.uptime)) · \(Format.processes(snapshot.processCount))")
@@ -484,8 +525,6 @@ private final class OverviewPage: NSStackView {
 // MARK: - Metric tab
 
 private final class MetricPage: NSStackView {
-    static let appRowCount = 5
-
     let metric: Metric
     let figure = BigFigureView(size: 28)
     let caption = NSTextField.label("", size: 11, color: .secondaryLabelColor)
@@ -521,7 +560,8 @@ private final class MetricPage: NSStackView {
         let header = SectionHeader("Top apps")
         addFullWidth(header)
         setCustomSpacing(2, after: header)
-        for _ in 0..<Self.appRowCount {
+        // Built for the largest count; rows past the chosen count are hidden.
+        for _ in 0..<Preferences.dashboardAppCounts.upperBound {
             let row = AppRow(metric: metric, onOpen: onOpenApp, beforeModal: beforeModal)
             appRows.append(row)
             addFullWidth(row)
@@ -536,6 +576,9 @@ private final class MetricPage: NSStackView {
         chart.maxValue = maxValue
         chart.series = series
     }
+
+    /// Returns whether the number of visible rows changed.
+    func setAppRowCount(_ count: Int) -> Bool { appRows.setVisibleCount(count) }
 
     func setStats(_ values: [String]) {
         for (stat, value) in zip(stats, values) { stat.valueLabel.set(value) }
@@ -998,6 +1041,18 @@ private final class TabButton: NSView {
     override func accessibilityPerformPress() -> Bool {
         onClick?()
         return true
+    }
+}
+
+private extension Array where Element: NSView {
+    /// Shows the first `count` views and hides the rest. Returns whether anything changed.
+    func setVisibleCount(_ count: Int) -> Bool {
+        var changed = false
+        for (index, view) in enumerated() where view.isHidden != (index >= count) {
+            view.isHidden = index >= count
+            changed = true
+        }
+        return changed
     }
 }
 
