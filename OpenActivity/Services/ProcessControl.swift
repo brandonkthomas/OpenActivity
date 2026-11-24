@@ -17,6 +17,13 @@ enum ProcessControl {
             present(alert, window: window) { _ in }
             return
         }
+        guard !app.id.hasPrefix(AppGrouper.simulatorDeviceGroupPrefix) else {
+            let alert = NSAlert()
+            alert.messageText = "Simulators can't be quit as a group"
+            alert.informativeText = "Shut the device down in Xcode instead, or expand the group and quit a single process."
+            present(alert, window: window) { _ in }
+            return
+        }
         let alert = NSAlert()
         alert.icon = AppIcons.icon(for: app)
         alert.messageText = force ? "Force quit \(app.name)?" : "Quit \(app.name)?"
