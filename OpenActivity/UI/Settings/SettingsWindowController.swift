@@ -194,6 +194,15 @@ private class SettingsPane: NSViewController {
         return field
     }
 
+    /// Controls side by side on one row.
+    static func line(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        return stack
+    }
+
     func checkbox(_ title: String, action: Selector) -> NSButton {
         NSButton(checkboxWithTitle: title, target: self, action: action)
     }
@@ -285,6 +294,8 @@ private final class MenuBarPane: SettingsPane {
     private var styleNote: NSTextField!
     private var metricBoxes: [(Metric, NSButton)] = []
     private var tabBoxes: [(Metric, NSButton)] = []
+    private var busiestCount: NSPopUpButton!
+    private var topAppsCount: NSPopUpButton!
 
     init() { super.init(title: "Menu Bar") }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -335,6 +346,12 @@ private final class MenuBarPane: SettingsPane {
         }
         addNote("The tabs shown when you click the menu bar item.")
 
+        busiestCount = appCountPicker()
+        topAppsCount = appCountPicker()
+        addRow("Busiest right now:", Self.line([busiestCount, NSTextField(labelWithString: "apps on the Overview tab")]), topPadding: 10)
+        addRow("Top apps:", Self.line([topAppsCount, NSTextField(labelWithString: "apps on the other tabs")]))
+        addNote("How many apps the dashboard lists when you click the menu bar item.", indented: false)
+
         let warning = Self.note("""
             In every style, the menu bar icon turns into a warning sign while your Mac is under strain, \
             for example when memory runs short or an app keeps the processor busy.
@@ -365,6 +382,28 @@ private final class MenuBarPane: SettingsPane {
         preview.metrics = preferences.menuBarMetrics
         let hidden = preferences.hiddenDashboardTabs
         for (metric, box) in tabBoxes { box.state = hidden.contains(metric) ? .off : .on }
+        busiestCount.selectItem(withTag: preferences.dashboardBusiestCount)
+        topAppsCount.selectItem(withTag: preferences.dashboardTopAppsCount)
+    }
+
+    private func appCountPicker() -> NSPopUpButton {
+        let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+        for count in Preferences.dashboardAppCounts {
+            picker.addItem(withTitle: "\(count)")
+            picker.lastItem?.tag = count
+        }
+        picker.target = self
+        picker.action = #selector(changeAppCount(_:))
+        return picker
+    }
+
+    @objc private func changeAppCount(_ sender: NSPopUpButton) {
+        let count = sender.selectedTag()
+        if sender === busiestCount {
+            Preferences.shared.dashboardBusiestCount = count
+        } else {
+            Preferences.shared.dashboardTopAppsCount = count
+        }
     }
 
     @objc private func changeStyle(_ sender: NSSegmentedControl) {
@@ -579,14 +618,6 @@ private final class AlertsPane: SettingsPane {
         super.viewWillAppear()
         settings = AlertSettings.load()
         load()
-    }
-
-    private static func line(_ views: [NSView]) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
-        return stack
     }
 
     /// Rows with a number field center their label on the field instead of using baselines.
