@@ -43,6 +43,7 @@ final class Preferences {
         static let showSystem = "apps.showSystem"
         static let showDockIcon = "app.showDockIcon"
         static let lastPage = "window.lastPage"
+        static let hiddenDashboardTabs = "popover.hiddenTabs"
     }
 
     init() {
@@ -82,6 +83,13 @@ final class Preferences {
             NSApp.setActivationPolicy(newValue ? .regular : .accessory)
             changed()
         }
+    }
+
+    /// Tabs left out of the menu bar dashboard. Stored as hidden rather than shown so tabs added
+    /// in later versions appear by default.
+    var hiddenDashboardTabs: Set<Metric> {
+        get { Set((defaults.stringArray(forKey: Key.hiddenDashboardTabs) ?? []).compactMap(Metric.init(rawValue:))) }
+        set { defaults.set(newValue.map(\.rawValue).sorted(), forKey: Key.hiddenDashboardTabs); changed() }
     }
 
     var lastPage: Metric {
