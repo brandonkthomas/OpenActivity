@@ -14,7 +14,7 @@ final class PopoverViewController: NSViewController {
     var dismiss: (() -> Void)?
 
     static let width: CGFloat = 360
-    private static let tabs: [Metric] = [.overview, .cpu, .memory, .disk, .network, .gpu, .battery, .projects]
+    static let tabs: [Metric] = [.overview, .cpu, .memory, .disk, .network, .gpu, .battery, .projects]
     private static let tabKey = "popover.tab"
 
     private var selected: Metric
@@ -24,6 +24,7 @@ final class PopoverViewController: NSViewController {
     private var metricPages: [Metric: MetricPage] = [:]
     private var projectsPage: ProjectsPage!
     private var token: Monitor.Token?
+    private var preferencesObserver: NSObjectProtocol?
     private var isOnScreen = false
 
     // Traffic since launch, integrated from the sampled rates.
@@ -36,8 +37,12 @@ final class PopoverViewController: NSViewController {
 
     init() {
         let stored = Metric(rawValue: UserDefaults.standard.string(forKey: Self.tabKey) ?? "")
-        selected = stored.flatMap { Self.tabs.contains($0) ? $0 : nil } ?? .overview
+        let visible = Self.visibleTabs
+        selected = stored.flatMap { visible.contains($0) ? $0 : nil } ?? visible[0]
         super.init(nibName: nil, bundle: nil)
+        preferencesObserver = NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.applyHiddenTabs()
+        }
         // Observed from launch so the session totals are complete; the UI only updates while shown.
         token = Monitor.shared.observe { [weak self] snapshot in self?.receive(snapshot) }
     }
@@ -47,6 +52,7 @@ final class PopoverViewController: NSViewController {
 
     deinit {
         if let token { Monitor.shared.removeObserver(token) }
+        if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }
     }
 
     // MARK: - Building
@@ -81,6 +87,7 @@ final class PopoverViewController: NSViewController {
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 0, right: 0)
 
         view = root
+        applyHiddenTabs()
         showSelectedPage()
 
         // Every page reserves its full height, so the size measured once holds for good.
@@ -105,8 +112,11 @@ final class PopoverViewController: NSViewController {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        let open: (Metric) -> Void = { [weak self] metric in self?.select(metric) }
         let openMain: (Metric) -> Void = { [weak self] metric in self?.openMainWindow(metric) }
+        // A metric whose tab is hidden opens in the main window instead.
+        let open: (Metric) -> Void = { [weak self] metric in
+            if Self.visibleTabs.contains(metric) { self?.select(metric) } else { openMain(metric) }
+        }
         let beforeModal: () -> Void = { [weak self] in self?.dismiss?() }
 
         overviewPage = OverviewPage(onSelect: open, onOpenApp: openMain, beforeModal: beforeModal)
@@ -194,6 +204,19 @@ final class PopoverViewController: NSViewController {
     func showTab(_ metric: Metric) {
         guard Self.tabs.contains(metric) else { return }
         select(metric)
+    }
+
+    /// The tabs not hidden in Settings, never empty.
+    static var visibleTabs: [Metric] {
+        let hidden = Preferences.shared.hiddenDashboardTabs
+        let visible = tabs.filter { !hidden.contains($0) }
+        return visible.isEmpty ? tabs : visible
+    }
+
+    private func applyHiddenTabs() {
+        let visible = Self.visibleTabs
+        for (metric, button) in tabButtons { button.isHidden = !visible.contains(metric) }
+        if !visible.contains(selected) { select(visible[0]) }
     }
 
     private func select(_ metric: Metric) {

@@ -284,6 +284,7 @@ private final class MenuBarPane: SettingsPane {
     private let preview = MenuBarPreview()
     private var styleNote: NSTextField!
     private var metricBoxes: [(Metric, NSButton)] = []
+    private var tabBoxes: [(Metric, NSButton)] = []
 
     init() { super.init(title: "Menu Bar") }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -327,6 +328,13 @@ private final class MenuBarPane: SettingsPane {
         }
         addNote("Used by the Figure, Graph and Stacked styles, in the order listed here.")
 
+        for (index, metric) in PopoverViewController.tabs.enumerated() {
+            let box = checkbox(metric.title, action: #selector(toggleTab(_:)))
+            tabBoxes.append((metric, box))
+            addRow(index == 0 ? "Dashboard tabs:" : nil, box, topPadding: index == 0 ? 10 : -4)
+        }
+        addNote("The tabs shown when you click the menu bar item.")
+
         let warning = Self.note("""
             In every style, the menu bar icon turns into a warning sign while your Mac is under strain, \
             for example when memory runs short or an app keeps the processor busy.
@@ -355,6 +363,8 @@ private final class MenuBarPane: SettingsPane {
         }
         preview.style = style
         preview.metrics = preferences.menuBarMetrics
+        let hidden = preferences.hiddenDashboardTabs
+        for (metric, box) in tabBoxes { box.state = hidden.contains(metric) ? .off : .on }
     }
 
     @objc private func changeStyle(_ sender: NSSegmentedControl) {
@@ -371,6 +381,16 @@ private final class MenuBarPane: SettingsPane {
             return
         }
         Preferences.shared.menuBarMetrics = chosen
+    }
+
+    @objc private func toggleTab(_ sender: NSButton) {
+        if !tabBoxes.contains(where: { $0.1.state == .on }) {
+            // Keep at least one tab; the dashboard needs something to show.
+            sender.state = .on
+            NSSound.beep()
+            return
+        }
+        Preferences.shared.hiddenDashboardTabs = Set(tabBoxes.filter { $0.1.state == .off }.map(\.0))
     }
 }
 
