@@ -3,10 +3,11 @@
 //  OpenActivity
 //
 //  Adds every process to the app that launched it: Chrome's helpers to Chrome, a shell and
-//  everything it runs to Terminal, WebKit's content processes to Safari.
+//  everything it runs to Terminal, WebKit's content processes to Safari. Each booted simulator
+//  device becomes one group, and the simulator app with CoreSimulator's services another.
 //
 
-import Foundation
+import AppKit
 
 final class AppGrouper {
     struct BundleInfo {
@@ -18,8 +19,12 @@ final class AppGrouper {
     }
 
     static let systemGroupID = "com.openactivity.macos"
+    /// Followed by the device's UDID.
+    static let simulatorDeviceGroupPrefix = "com.openactivity.simulator."
 
     private var bundles: [String: BundleInfo] = [:]
+    /// The device group behind each running `launchd_sim`, with its start time to catch pid reuse.
+    private var simulatorDevices: [Int32: (start: Date?, device: BundleInfo)] = [:]
 
     func group(_ processes: [ProcessSample]) -> [AppGroup] {
         let byPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
@@ -29,6 +34,7 @@ final class AppGrouper {
             let owner = owner(of: process, byPID: byPID)
             members[owner.id, default: (owner, [])].processes.append(process)
         }
+        simulatorDevices = simulatorDevices.filter { byPID[$0.key]?.startTime == $0.value.start }
         return members.values.map { owner, processes in
             AppGroup(
                 id: owner.id,
@@ -42,6 +48,9 @@ final class AppGrouper {
     }
 
     private func owner(of process: ProcessSample, byPID: [Int32: ProcessSample]) -> BundleInfo {
+        if let device = simulatorDevice(of: process, byPID: byPID) { return device }
+        if let host = Self.simulatorHost, Self.isSimulatorHostProcess(process, host: host) { return host }
+
         // Prefer the responsible process, then walk up the parents until something lives in an app bundle.
         var candidates: [ProcessSample] = [process]
         if process.responsiblePID != process.pid, let responsible = byPID[process.responsiblePID] {
@@ -63,6 +72,67 @@ final class AppGrouper {
         }
         return BundleInfo(id: "exec:" + process.name, name: process.name, path: process.path ?? "", identifier: nil, isSystem: false)
     }
+
+    // MARK: - Simulator
+
+    /// The device group for a process running inside a booted simulator: `launchd_sim` and everything
+    /// it starts, which macOS otherwise reports as hundreds of unrelated processes and iOS apps.
+    private func simulatorDevice(of process: ProcessSample, byPID: [Int32: ProcessSample]) -> BundleInfo? {
+        var current = process
+        var hops = 0
+        while current.name != "launchd_sim" {
+            guard current.ppid > 1, hops < 16, let parent = byPID[current.ppid] else { return nil }
+            current = parent
+            hops += 1
+        }
+        if let cached = simulatorDevices[current.pid], cached.start == current.startTime { return cached.device }
+
+        // launchd_sim is started with a path inside the device's folder: …/CoreSimulator/Devices/<UDID>/…
+        let marker = "/CoreSimulator/Devices/"
+        let argument = ProcessSampler.commandLine(pid: current.pid).first { $0.contains(marker) }
+        var udid = "pid-\(current.pid)"
+        var deviceName = "Simulator"
+        if let argument, let range = argument.range(of: marker),
+           let component = argument[range.upperBound...].split(separator: "/").first {
+            udid = String(component)
+            let plist = String(argument[..<range.upperBound]) + udid + "/device.plist"
+            if let data = FileManager.default.contents(atPath: plist),
+               let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+               let name = info["name"] as? String, !name.isEmpty {
+                deviceName = name
+            }
+        }
+        let host = Self.simulatorHost
+        let device = BundleInfo(
+            id: Self.simulatorDeviceGroupPrefix + udid,
+            name: "\(host?.name ?? "Simulator") (\(deviceName))",
+            path: host?.path ?? "",
+            // No identifier: quitting the group must not quit the simulator app.
+            identifier: nil,
+            isSystem: false
+        )
+        simulatorDevices[current.pid] = (current.startTime, device)
+        return device
+    }
+
+    /// The app that shows simulators: DeviceHub inside Xcode 27 and later, Simulator before it.
+    /// Resolved once; nil without Xcode.
+    private static let simulatorHost: BundleInfo? = {
+        for identifier in ["com.apple.dt.Devices", "com.apple.iphonesimulator"] {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else { continue }
+            let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+            return BundleInfo(id: identifier, name: name, path: url.path, identifier: identifier, isSystem: false)
+        }
+        return nil
+    }()
+
+    /// The simulator app itself and CoreSimulator's shared services, which serve every device.
+    private static func isSimulatorHostProcess(_ process: ProcessSample, host: BundleInfo) -> Bool {
+        guard let path = process.path else { return false }
+        return path.hasPrefix(host.path + "/") || path.hasPrefix("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/")
+    }
+
+    // MARK: - Bundles
 
     /// The outermost `.app` bundle in the path, so nested helper apps count toward their parent.
     private func bundle(containing path: String) -> BundleInfo? {
