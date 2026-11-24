@@ -3,8 +3,9 @@
 //  OpenActivity
 //
 //  Adds every process to the app that launched it: Chrome's helpers to Chrome, a shell and
-//  everything it runs to Terminal, WebKit's content processes to Safari. Each booted simulator
-//  device becomes one group, and the simulator app with CoreSimulator's services another.
+//  everything it runs to Terminal, WebKit's content processes to Safari. A background-only app
+//  that another app starts (Claude Code from Claude) counts toward the app that started it. Each
+//  booted simulator device becomes one group, and the simulator app with CoreSimulator's services another.
 //
 
 import AppKit
@@ -16,6 +17,8 @@ final class AppGrouper {
         var path: String
         var identifier: String?
         var isSystem: Bool
+        /// A background-only or agent app, with no Dock icon of its own.
+        var isBackground = false
     }
 
     static let systemGroupID = "com.openactivity.macos"
@@ -57,7 +60,10 @@ final class AppGrouper {
             candidates.insert(responsible, at: 0)
         }
         for candidate in candidates {
-            if let path = candidate.path, let info = bundle(containing: path) { return info }
+            if let path = candidate.path, let info = bundle(containing: path) {
+                if info.isBackground, let launcher = launchingApp(of: candidate, outside: info, byPID: byPID) { return launcher }
+                return info
+            }
         }
         var current = process
         var hops = 0
@@ -71,6 +77,21 @@ final class AppGrouper {
             return BundleInfo(id: Self.systemGroupID, name: "macOS", path: "", identifier: nil, isSystem: true)
         }
         return BundleInfo(id: "exec:" + process.name, name: process.name, path: process.path ?? "", identifier: nil, isSystem: false)
+    }
+
+    /// The regular app that started a background-only app, found by walking up its parents. Nil when
+    /// launchd started it (ppid 1), so agents launched on their own keep their own group.
+    private func launchingApp(of process: ProcessSample, outside own: BundleInfo, byPID: [Int32: ProcessSample]) -> BundleInfo? {
+        var current = process
+        var hops = 0
+        while current.ppid > 1, hops < 16, let parent = byPID[current.ppid] {
+            if let path = parent.path, let info = bundle(containing: path), info.id != own.id, !info.isBackground {
+                return info
+            }
+            current = parent
+            hops += 1
+        }
+        return nil
     }
 
     // MARK: - Simulator
@@ -158,7 +179,8 @@ final class AppGrouper {
             name: name.isEmpty ? fileName : name,
             path: fullPath,
             identifier: identifier,
-            isSystem: isSystem
+            isSystem: isSystem,
+            isBackground: isAgent
         )
         bundles[fullPath] = result
         return result
