@@ -3,7 +3,8 @@
 //  OpenActivity
 //
 //  The menu bar item. Draws the chosen figures or graphs into one image, redrawn only when what
-//  it shows changes. Left click toggles the popover dashboard, right click opens a short menu.
+//  it shows changes. Left click toggles the popover dashboard, opening it on the tab of the figure
+//  that was clicked; right click opens a short menu.
 //
 
 import AppKit
@@ -16,6 +17,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var preferencesObserver: NSObjectProtocol?
     private var outsideClickMonitor: Any?
     private var drawnCells: [MenuBarCell]?
+    /// The metric behind each drawn cell, nil for the plain icon.
+    private var drawnMetrics: [Metric?] = []
 
     override init() {
         super.init()
@@ -82,6 +85,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         )
         guard cells != drawnCells, let button = statusItem.button else { return }
         drawnCells = cells
+        drawnMetrics = cells.count == preferences.menuBarMetrics.count && preferences.menuBarStyle != .icon
+            ? preferences.menuBarMetrics : cells.map { _ in nil }
         button.image = MenuBarRenderer.image(for: cells)
         button.toolTip = Monitor.shared.hasSample ? MenuBarCell.toolTip(for: snapshot) : "OpenActivity"
     }
@@ -95,8 +100,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if popover.isShown {
             closePopover()
         } else {
+            if let metric = clickedMetric(in: sender) { popoverController.showTab(metric) }
             showPopover()
         }
+    }
+
+    /// The metric of the cell under the click, if the menu bar shows figures or graphs.
+    private func clickedMetric(in button: NSStatusBarButton) -> Metric? {
+        guard let window = button.window, let cells = drawnCells, let imageWidth = button.image?.size.width else { return nil }
+        // The current event's location isn't reliably in the button's window, so start from the screen.
+        let location = button.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        // The image is drawn centered in the button.
+        let x = location.x - (button.bounds.width - imageWidth) / 2
+        guard let index = MenuBarRenderer.cellIndex(at: x, in: cells), drawnMetrics.indices.contains(index) else { return nil }
+        return drawnMetrics[index]
     }
 
     private func showPopover() {
@@ -366,6 +383,19 @@ private enum MenuBarRenderer {
         image.isTemplate = template
         image.accessibilityDescription = "OpenActivity"
         return image
+    }
+
+    /// The cell under `x`, measured from the image's left edge. Gaps between cells go to the nearer
+    /// cell and points beyond either end to the end cell.
+    static func cellIndex(at x: CGFloat, in cells: [MenuBarCell]) -> Int? {
+        guard !cells.isEmpty else { return nil }
+        var end: CGFloat = 0
+        for (index, cell) in cells.enumerated() {
+            end += width(of: cell)
+            if x < end + cellSpacing / 2 { return index }
+            end += cellSpacing
+        }
+        return cells.count - 1
     }
 
     // MARK: Measuring
