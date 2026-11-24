@@ -3,7 +3,8 @@
 //  OpenActivity
 //
 //  Runs every sampler on one background queue and publishes a SystemSnapshot to the main thread.
-//  Samples every five seconds in the background and faster while a window or the menu is open.
+//  Samples every five seconds in the background and at the chosen update frequency while a window
+//  or the menu is open.
 //
 
 import AppKit
@@ -96,7 +97,7 @@ final class Monitor {
         (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? Host.current().localizedName ?? "Mac"
     }()
 
-    static let interactiveInterval: TimeInterval = 2
+    static var interactiveInterval: TimeInterval { Preferences.shared.updateFrequency.interval }
     static let backgroundInterval: TimeInterval = 5
 
     func start() {
@@ -108,12 +109,19 @@ final class Monitor {
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.refreshNow()
         }
+        NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.updateInterval()
+        }
         schedule()
     }
 
     /// Faster sampling while something on screen shows live figures.
     func setInteractive(_ interactive: Bool, reason: String) {
         if interactive { interactiveReasons.insert(reason) } else { interactiveReasons.remove(reason) }
+        updateInterval()
+    }
+
+    private func updateInterval() {
         let wanted = interactiveReasons.isEmpty ? Self.backgroundInterval : Self.interactiveInterval
         guard wanted != interval else { return }
         interval = wanted

@@ -205,6 +205,7 @@ private final class GeneralPane: SettingsPane {
     private var launchAtLogin: NSButton!
     private var dockIcon: NSButton!
     private var systemProcesses: NSButton!
+    private var updateFrequency: NSPopUpButton!
 
     init() { super.init(title: "General") }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -219,6 +220,14 @@ private final class GeneralPane: SettingsPane {
         addNote("With the icon hidden, OpenActivity keeps running in the menu bar. Open the main window from there.")
         addRow("App lists:", systemProcesses, topPadding: 6)
         addNote("Daemons and background services that belong to macOS are shown together as one “macOS” entry.")
+
+        updateFrequency = NSPopUpButton(frame: .zero, pullsDown: false)
+        updateFrequency.addItems(withTitles: UpdateFrequency.allCases.map(\.title))
+        updateFrequency.target = self
+        updateFrequency.action = #selector(changeUpdateFrequency(_:))
+        addRow("Update frequency:", updateFrequency, topPadding: 6)
+        addNote("How often figures refresh while a window or the menu bar dashboard is open. "
+            + "In the background, OpenActivity samples every \(Int(Monitor.backgroundInterval)) seconds.", indented: false)
 
         let helper = Self.note("""
             Not installed. macOS only reports figures for processes that run under your account, \
@@ -240,6 +249,7 @@ private final class GeneralPane: SettingsPane {
         launchAtLogin.state = preferences.launchAtLogin ? .on : .off
         dockIcon.state = preferences.showDockIcon ? .on : .off
         systemProcesses.state = preferences.showSystemProcesses ? .on : .off
+        updateFrequency.selectItem(at: UpdateFrequency.allCases.firstIndex(of: preferences.updateFrequency) ?? 0)
     }
 
     @objc private func toggleLaunchAtLogin(_ sender: NSButton) {
@@ -259,6 +269,11 @@ private final class GeneralPane: SettingsPane {
 
     @objc private func toggleSystemProcesses(_ sender: NSButton) {
         Preferences.shared.showSystemProcesses = sender.state == .on
+    }
+
+    @objc private func changeUpdateFrequency(_ sender: NSPopUpButton) {
+        guard UpdateFrequency.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        Preferences.shared.updateFrequency = UpdateFrequency.allCases[sender.indexOfSelectedItem]
     }
 }
 

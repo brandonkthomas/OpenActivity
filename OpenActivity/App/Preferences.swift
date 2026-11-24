@@ -28,6 +28,29 @@ enum MenuBarStyle: String, CaseIterable {
     }
 }
 
+/// How often figures refresh while a window or the menu bar dashboard is open.
+enum UpdateFrequency: String, CaseIterable {
+    case veryOften
+    case often
+    case normally
+
+    var interval: TimeInterval {
+        switch self {
+        case .veryOften: return 1
+        case .often: return 2
+        case .normally: return 5
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .veryOften: return "Very often (1 sec)"
+        case .often: return "Often (2 sec)"
+        case .normally: return "Normally (5 sec)"
+        }
+    }
+}
+
 final class Preferences {
     static let shared = Preferences()
     static let didChange = Notification.Name("OpenActivityPreferencesDidChange")
@@ -43,6 +66,7 @@ final class Preferences {
         static let showSystem = "apps.showSystem"
         static let showDockIcon = "app.showDockIcon"
         static let lastPage = "window.lastPage"
+        static let updateFrequency = "monitor.updateFrequency"
     }
 
     init() {
@@ -52,6 +76,7 @@ final class Preferences {
             Key.showSystem: true,
             Key.showDockIcon: true,
             Key.lastPage: Metric.overview.rawValue,
+            Key.updateFrequency: UpdateFrequency.often.rawValue,
         ])
     }
 
@@ -82,6 +107,11 @@ final class Preferences {
             NSApp.setActivationPolicy(newValue ? .regular : .accessory)
             changed()
         }
+    }
+
+    var updateFrequency: UpdateFrequency {
+        get { UpdateFrequency(rawValue: defaults.string(forKey: Key.updateFrequency) ?? "") ?? .often }
+        set { defaults.set(newValue.rawValue, forKey: Key.updateFrequency); changed() }
     }
 
     var lastPage: Metric {
